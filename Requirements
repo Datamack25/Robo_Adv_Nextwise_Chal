@@ -1,2 +1,8 @@
 streamlit
 yfinance
+pandas
+numpy
+scipy.optimize minimize
+matplotlib.pyplot
+plotly.graph_objects as go
+plotly.subplots make_subplots
