@@ -4,147 +4,170 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import minimize
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-# Listes des actifs (tickers yfinance : .PA pour Paris, .AS pour Amsterdam, etc.)
+# === Listes des actifs ===
 euronext_50 = [
-    'MC.PA', 'ASML.AS', 'TTE.PA', 'OR.PA', 'RMS.PA', 'AIR.PA', 'SU.PA', 'SAN.PA', 'BNP.PA', 'ADYEN.AS', # Top 10
-    'ORAN.PA', 'SAF.PA', 'EL.PA', 'CAP.PA', 'ORA.PA', 'ENGI.PA', 'ACA.PA', 'BN.PA', 'EN.PA', 'HO.PA', # CAC/AEX
-    'ALO.PA', 'PUB.PA', 'URW.AS', 'ABI.BR', 'GLE.PA', 'VIE.PA', 'KER.PA', 'STLA.MI', 'NEC.PA', 'RF.PA', # Divers
-    'DG.PA', 'SW.PA', 'ENX.PA', 'BIO.PA', 'TEP.PA', 'SGO.PA', 'HOA.PA', 'ML.PA', 'RI.PA', 'CA.PA', # Mid-caps
-    # Europe large (ajustés pour liquidité)
+    'MC.PA', 'ASML.AS', 'TTE.PA', 'OR.PA', 'RMS.PA', 'AIR.PA', 'SU.PA', 'SAN.PA', 'BNP.PA', 'ADYEN.AS',
+    'ORAN.PA', 'SAF.PA', 'EL.PA', 'CAP.PA', 'ORA.PA', 'ENGI.PA', 'ACA.PA', 'BN.PA', 'EN.PA', 'HO.PA',
+    'ALO.PA', 'PUB.PA', 'URW.AS', 'ABI.BR', 'GLE.PA', 'VIE.PA', 'KER.PA', 'STLA.MI', 'NEC.PA', 'RF.PA',
+    'DG.PA', 'SW.PA', 'ENX.PA', 'BIO.PA', 'TEP.PA', 'SGO.PA', 'HOA.PA', 'ML.PA', 'RI.PA', 'CA.PA',
     'ULVR.L', 'NOVO-B.CO', 'NOK.HE', 'VOLV-B.ST', 'NESN.SW', 'ROG.SW', 'SAP.DE', 'ALV.DE', 'SIE.DE', 'BAS.DE'
-] # 50 actifs Euronext-ish (top market cap/liquidité nov. 2025)
+]
+
 global_25 = [
-    'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'LLY', 'AVGO', # US Tech
-    'JPM', 'UNH', 'V', 'XOM', 'PG', 'JNJ', 'HD', 'MA', 'CVX', 'BAC', # US Divers
-    # Asie (Taiwan Semi, Tencent, Alibaba, Tencent HK, TSMC)
+    'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'LLY', 'AVGO',
+    'JPM', 'UNH', 'V', 'XOM', 'PG', 'JNJ', 'HD', 'MA', 'CVX', 'BAC',
     'TSM', 'TCEHY', 'BABA', '0700.HK', '2330.TW'
-] # 25 top global hors Europe (market cap >$200 Bn, nov. 2025)
+]
+
 all_tickers = euronext_50 + global_25
 
-st.title("🤖 Robot Advisor : Optimisation Markowitz pour 50k€")
+# === Titre & Sidebar ===
+st.title("Robot Advisor : Optimisation Markowitz pour 50k€")
 
-# Sidebar pour inputs
 budget = st.sidebar.number_input("Budget (€)", value=50000.0, min_value=1000.0)
-risk_level = st.sidebar.selectbox(
-    "Niveau de risque", ["Conservateur", "Modéré", "Agressif"])
-target_return = st.sidebar.slider(
-    "Rendement cible annualisé (%)", 5.0, 15.0, 8.0) / 100
+risk_level = st.sidebar.selectbox("Niveau de risque", ["Conservateur", "Modéré", "Agressif"])
+target_return = st.sidebar.slider("Rendement cible annualisé (%)", 5.0, 15.0, 8.0) / 100
 
-# Ajustement automatique du target_return basé sur le risque (AVANT le rerun)
+# Ajustement automatique du risque
 if risk_level == "Conservateur":
     target_return = 0.06
 elif risk_level == "Agressif":
     target_return = 0.12
 
 selected_tickers = st.sidebar.multiselect(
-    # Limite pour perf
-    "Sélectionnez actifs (défaut: tous)", all_tickers, default=all_tickers[:20])
+    "Sélectionnez actifs (défaut: 20)", all_tickers, default=all_tickers[:20]
+)
 
-# Téléchargement données (5 ans) - CORRIGÉ : Utilise 'Close' avec auto_adjust=True
+# === Fonction de chargement des données (corrigée) ===
 @st.cache_data
 def load_data(tickers):
     if not tickers:
         return pd.DataFrame()
-    data = yf.download(tickers, period="5y", auto_adjust=True, progress=False)
-    returns = data['Close'].pct_change().dropna()
-    return returns
+    try:
+        data = yf.download(tickers, period="5y", auto_adjust=True, progress=False)
+        returns = data['Close'].pct_change().dropna()
+        return returns
+    except Exception as e:
+        st.error(f"Erreur téléchargement: {e}")
+        return pd.DataFrame()
 
-if st.sidebar.button("Charger Données"):
-    with st.spinner("Téléchargement..."):
-        returns = load_data(selected_tickers)
-    
-    if returns.empty:
-        st.error("Aucune donnée chargée. Vérifiez les tickers.")
-        st.stop()
-    
-    st.success(f"Données chargées pour {len(selected_tickers)} actifs.")
-    
-    # Calculs Markowitz
-    mu = returns.mean() * 252 # Rendements annualisés
-    cov = returns.cov() * 252 # Covariance annualisée
-    
-    def portfolio_perf(weights, mu, cov):
-        ret = np.dot(weights, mu)
-        vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
-        return ret, vol
-    
-    def neg_sharpe(weights, mu, cov, rf=0.02):
-        ret, vol = portfolio_perf(weights, mu, cov)
-        return - (ret - rf) / vol if vol > 0 else np.inf
-    
-    def optimize_portfolio(mu, cov, target_ret):
-        n = len(mu)
-        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
-                       {'type': 'eq', 'fun': lambda x: np.dot(x, mu) - target_ret})
-        bounds = tuple((0, 1) for _ in range(n))
-        result = minimize(lambda x: np.dot(x.T, np.dot(cov, x)), np.ones(n)/n, method='SLSQP',
-                          bounds=bounds, constraints=constraints)
-        return result.x if result.success else np.ones(n)/n
-    
-    # Optimisation
-    weights = optimize_portfolio(mu, cov, target_return)
-    port_ret, port_vol = portfolio_perf(weights, mu, cov)
-    sharpe = (port_ret - 0.02) / port_vol if port_vol > 0 else 0
-    
-    # Mesures de performance (sur backtest simple) - Cache déplacé ici pour éviter bugs
-    def backtest(weights, returns):
+# === Fonction backtest (corrigée et indentée) ===
+def backtest(weights, returns):
     if returns.empty or len(returns) == 0:
-        return 0.0, 0.0, 0.0  # Évite tout crash
+        return 0.0, 0.0, 0.0
     
     port_returns = np.dot(returns, weights)
+    port_returns = pd.Series(port_returns, index=returns.index)
     
-    # Vérifie que port_returns est bien une série
     if len(port_returns) == 0:
         return 0.0, 0.0, 0.0
     
-    cum_ret = (1 + pd.Series(port_returns)).cumprod()
+    cum_ret = (1 + port_returns).cumprod()
     drawdown = (cum_ret / cum_ret.cummax() - 1).min()
     
     downside = port_returns[port_returns < 0]
     downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else 1e-6
     sortino = (port_returns.mean() * 252 - 0.02) / downside_std
     
-    return cum_ret.iloc[-1] - 1, drawdown, sortino
+    total_ret = cum_ret.iloc[-1] - 1
+    return total_ret, drawdown, sortino
+
+# === Bouton de chargement ===
+if st.sidebar.button("Charger Données"):
+    with st.spinner("Téléchargement des données..."):
+        returns = load_data(selected_tickers)
     
-    # Allocation en €
-    allocation = pd.DataFrame(
-        {'Actif': selected_tickers, 'Poids %': weights * 100, 'Montant €': weights * budget})
+    if returns.empty:
+        st.error("Aucune donnée retournée. Vérifiez les tickers.")
+        st.stop()
+    
+    st.success(f"Données chargées pour {len(selected_tickers)} actifs.")
+
+    # === Calculs Markowitz ===
+    mu = returns.mean() * 252
+    cov = returns.cov() * 252
+
+    def portfolio_perf(weights, mu, cov):
+        ret = np.dot(weights, mu)
+        vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
+        return ret, vol
+
+    def neg_sharpe(weights, mu, cov, rf=0.02):
+        ret, vol = portfolio_perf(weights, mu, cov)
+        return - (ret - rf) / vol if vol > 0 else np.inf
+
+    def optimize_portfolio(mu, cov, target_ret):
+        n = len(mu)
+        constraints = (
+            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
+            {'type': 'eq', 'fun': lambda x: np.dot(x, mu) - target_ret}
+        )
+        bounds = tuple((0, 1) for _ in range(n))
+        init = np.ones(n) / n
+        result = minimize(
+            lambda x: np.dot(x.T, np.dot(cov, x)),
+            init,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints
+        )
+        return result.x if result.success else init
+
+    # === Optimisation ===
+    weights = optimize_portfolio(mu, cov, target_return)
+    port_ret, port_vol = portfolio_perf(weights, mu, cov)
+    sharpe = (port_ret - 0.02) / port_vol if port_vol > 0 else 0
+
+    # === Backtest ===
+    total_ret, drawdown, sortino = backtest(weights, returns)
+
+    # === Allocation ===
+    allocation = pd.DataFrame({
+        'Actif': selected_tickers,
+        'Poids %': weights * 100,
+        'Montant €': weights * budget
+    }).round(2)
     allocation = allocation.sort_values('Poids %', ascending=False)
-    
-    # Visualisations
+
+    # === Frontière Efficiente ===
     st.subheader("Frontière Efficiente (Markowitz)")
     def efficient_frontier(mu, cov, n_points=50):
-        target_returns = np.linspace(mu.min(), mu.max(), n_points)
+        target_rets = np.linspace(mu.min(), mu.max(), n_points)
         vols = []
-        for tr in target_returns:
+        for tr in target_rets:
             w = optimize_portfolio(mu, cov, tr)
             _, v = portfolio_perf(w, mu, cov)
             vols.append(v)
-        return target_returns, np.array(vols)
-    
+        return target_rets, np.array(vols)
+
     tr_range, vols = efficient_frontier(mu, cov)
-    fig_ef = go.Figure()
-    fig_ef.add_trace(go.Scatter(x=vols, y=tr_range,
-                     mode='lines', name='Frontière Efficiente'))
-    fig_ef.add_trace(go.Scatter(x=[port_vol], y=[port_ret], mode='markers', name='Portefeuille Optimal', marker=dict(size=10, color='red')))
-    fig_ef.update_layout(title='Efficient Frontier',
-                         xaxis_title='Volatilité (%)', yaxis_title='Rendement (%)')
-    st.plotly_chart(fig_ef)
-    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=vols, y=tr_range, mode='lines', name='Frontière Efficiente'))
+    fig.add_trace(go.Scatter(x=[port_vol], y=[port_ret], mode='markers',
+                             name='Portefeuille Optimal', marker=dict(size=12, color='red')))
+    fig.update_layout(
+        title="Frontière Efficiente",
+        xaxis_title="Volatilité (annualisée)",
+        yaxis_title="Rendement attendu (annualisé)",
+        template="plotly_white"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # === Résultats ===
     st.subheader("Allocation Optimale")
-    st.dataframe(allocation)
-    
-    st.subheader("Mesures de Performance")
+    st.dataframe(allocation.style.format({"Poids %": "{:.2f}%", "Montant €": "€{:.0f}"}))
+
+    st.subheader("Performance du Portefeuille")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Rendement Attendu", f"{port_ret*100:.1f}%")
     col2.metric("Volatilité", f"{port_vol*100:.1f}%")
     col3.metric("Sharpe Ratio", f"{sharpe:.2f}")
     col4.metric("Sortino Ratio", f"{sortino:.2f}")
-    st.info(
-        f"Drawdown max historique: {drawdown*100:.1f}% | Rendement backtest 5 ans: {total_ret*100:.1f}%")
-else:
-    st.info("Cliquez sur 'Charger Données' pour démarrer l'optimisation.")
 
-st.caption("Modèle basé sur Markowitz. Avertissement: Pas de conseil financier ; performances passées ≠ futures. Consultez un pro.")
+    st.info(f"Drawdown max (5 ans): {drawdown*100:.1f}% | Rendement backtest: {total_ret*100:.1f}%")
+
+else:
+    st.info("Cliquez sur **'Charger Données'** pour lancer l'optimisation.")
+
+st.caption("Modèle Markowitz. Performances passées ≠ futures. Pas un conseil financier.")
