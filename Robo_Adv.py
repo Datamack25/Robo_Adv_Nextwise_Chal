@@ -7,16 +7,6 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-import streamlit as st
-import yfinance as yf
-
-st.title("Robo_Adv – En direct !")
-st.write("Test yfinance...")
-
-# Test rapide
-data = yf.Ticker("AAPL").history(period="1d")
-st.write("AAPL Prix:", data['Close'].iloc[-1])
-
 # Listes des actifs (tickers yfinance : .PA pour Paris, .AS pour Amsterdam, etc.)
 euronext_50 = [
     'MC.PA', 'ASML.AS', 'TTE.PA', 'OR.PA', 'RMS.PA', 'AIR.PA', 'SU.PA', 'SAN.PA', 'BNP.PA', 'ADYEN.AS',  # Top 10
