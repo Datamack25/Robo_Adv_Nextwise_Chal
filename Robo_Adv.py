@@ -90,14 +90,23 @@ if st.sidebar.button("Charger Données"):
     
     # Mesures de performance (sur backtest simple) - Cache déplacé ici pour éviter bugs
     def backtest(weights, returns):
-        port_returns = np.dot(returns, weights)
-        cum_ret = (1 + port_returns).cumprod()
-        drawdown = (cum_ret / cum_ret.cummax() - 1).min()
-        downside = port_returns[port_returns < 0].std() * np.sqrt(252)
-        sortino = (port_returns.mean() * 252 - 0.02) / downside if downside > 0 else 0
-        return cum_ret.iloc[-1] - 1, drawdown, sortino
+    if returns.empty or len(returns) == 0:
+        return 0.0, 0.0, 0.0  # Évite tout crash
     
-    total_ret, drawdown, sortino = backtest(weights, returns)
+    port_returns = np.dot(returns, weights)
+    
+    # Vérifie que port_returns est bien une série
+    if len(port_returns) == 0:
+        return 0.0, 0.0, 0.0
+    
+    cum_ret = (1 + pd.Series(port_returns)).cumprod()
+    drawdown = (cum_ret / cum_ret.cummax() - 1).min()
+    
+    downside = port_returns[port_returns < 0]
+    downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else 1e-6
+    sortino = (port_returns.mean() * 252 - 0.02) / downside_std
+    
+    return cum_ret.iloc[-1] - 1, drawdown, sortino
     
     # Allocation en €
     allocation = pd.DataFrame(
