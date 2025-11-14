@@ -5,7 +5,7 @@ import numpy as np
 from scipy.optimize import minimize
 import plotly.graph_objects as go
 
-# Liste d'actions euronext et global stable
+# Listes des tickers fiables
 euronext_stable = [
     'MC.PA', 'ASML.AS', 'TTE.PA', 'OR.PA', 'RMS.PA', 'AIR.PA', 'SU.PA', 'SAN.PA', 'BNP.PA', 'ADYEN.AS',
     'ORAN.PA', 'SAF.PA', 'EL.PA', 'CAP.PA', 'ORA.PA', 'ENGI.PA', 'BN.PA', 'EN.PA', 'ALO.PA', 'PUB.PA',
@@ -25,7 +25,6 @@ budget = st.sidebar.number_input("Budget (€)", value=50000.0, min_value=1000.0
 risk_level = st.sidebar.selectbox("Niveau de risque", ["Conservateur", "Modéré", "Agressif"])
 target_return_input = st.sidebar.slider("Rendement cible (%)", 5.0, 15.0, 8.0) / 100
 
-# Ajustement cible selon niveau de risque
 if risk_level == "Conservateur":
     target_return = 0.06
 elif risk_level == "Agressif":
@@ -132,4 +131,56 @@ if st.sidebar.button("Charger Données & Optimiser"):
             {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
             {'type': 'eq', 'fun': lambda x: np.dot(x, mu) - target_ret}
         )
-        bounds
+        bounds = tuple((0, 1) for _ in range(n))
+        init = np.ones(n) / n
+        result = minimize(
+            lambda x: np.dot(x.T, np.dot(cov, x)),
+            init, method='SLSQP', bounds=bounds, constraints=constraints
+        )
+        return result.x if result.success else init
+
+    weights = optimize_portfolio(mu, cov, target_return)
+    port_ret, port_vol = portfolio_perf(weights, mu, cov)
+    sharpe = (port_ret - 0.02) / port_vol if port_vol > 0 else 0
+    total_ret, drawdown, sortino = backtest(weights, returns)
+
+    allocation = pd.DataFrame({
+        'Actif': selected_tickers,
+        'Poids %': (weights * 100).round(2),
+        'Montant €': (weights * budget).round(0)
+    }).sort_values('Poids %', ascending=False)
+
+    st.subheader("📈 Frontière Efficiente")
+
+    def efficient_frontier(mu, cov, n_points=50):
+        target_rets = np.linspace(mu.min(), mu.max(), n_points)
+        vols = []
+        for tr in target_rets:
+            w = optimize_portfolio(mu, cov, tr)
+            _, v = portfolio_perf(w, mu, cov)
+            vols.append(v)
+        return target_rets, np.array(vols)
+
+    tr_range, vols = efficient_frontier(mu, cov)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=vols, y=tr_range, mode='lines', name='Frontière', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=[port_vol], y=[port_ret], mode='markers', name='Optimal', marker=dict(size=12, color='red')))
+    fig.update_layout(title="Frontière Efficiente", xaxis_title="Volatilité", yaxis_title="Rendement", template="plotly_white")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("💼 Allocation Optimale")
+    st.dataframe(allocation.style.format({"Poids %": "{:.1f}%", "Montant €": "€{:,.0f}"}))
+
+    st.subheader("📊 Performances")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Rendement", f"{port_ret*100:.1f}%")
+    col2.metric("Volatilité", f"{port_vol*100:.1f}%")
+    col3.metric("Sharpe", f"{sharpe:.2f}")
+    col4.metric("Sortino", f"{sortino:.2f}")
+
+    st.info(f"Backtest : {total_ret*100:.1f}% | Drawdown : {drawdown*100:.1f}%")
+
+else:
+    st.info("Sélectionnez + Cliquez 'Charger'.")
+
+st.caption("Markowitz. Pas de conseil financier.")
